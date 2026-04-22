@@ -1,28 +1,31 @@
-use std::{collections::HashMap, sync::atomic::{AtomicU64, Ordering}};
+use std::{collections::HashMap, sync::{Arc, atomic::{AtomicU64, Ordering}}};
 
-use tracing::info;
+use tracing::{info, warn};
 
-use crate::matching::{account_book::AccountBook, command::{CancelOrderCommand, Command, DepositCommand, PlaceOrderCommand, PutProductCommand}, message_sender::MessageSender, order_book::OrderBook, product_book::ProductBook};
+use crate::{config, matching::{account_book::AccountBook, command::{CancelOrderCommand, Command, DepositCommand, PlaceOrderCommand, PutProductCommand}, message_sender::{self, MessageSender}, order_book::{Order, OrderBook}, product_book::ProductBook}};
 
 pub struct MatchingEngine {
     order_books: HashMap<String, OrderBook>,
-    message_sequence: AtomicU64,
-    message_sender: MessageSender,
+    message_sequence: Arc<AtomicU64>,
+    message_sender: Arc<MessageSender>,
     product_book: ProductBook,
     account_book: AccountBook,
     pub startup_command_offset: Option<i64>,
 }
 
 impl MatchingEngine {
-    pub fn new() -> Self {
-        Self { 
-            order_books: HashMap::new(), 
-            message_sequence: AtomicU64::new(0), 
-            message_sender: MessageSender {  }, 
-            product_book: ProductBook {}, 
-            account_book: AccountBook {  }, 
+    pub fn new() -> anyhow::Result<Self> {
+        let app_cfg = config::get();
+        let message_sender = Arc::new(MessageSender::new(&app_cfg.bootstrap_server, &app_cfg.message_topic)?);
+        let message_sequence = Arc::new(AtomicU64::new(0));
+        Ok(Self {
+            order_books: HashMap::new(),
+            account_book: AccountBook::new(message_sender.clone(), message_sequence.clone()), 
+            product_book: ProductBook::new(message_sender.clone(), message_sequence.clone()), 
+            message_sequence, 
+            message_sender, 
             startup_command_offset: None
-        }
+        })
     }
 
     // pub fn restore(state_store: &EngineSnapshotManager, sender: MessageSender) -> Result<Self> {
@@ -64,27 +67,26 @@ impl MatchingEngine {
     //     })
     // }
 
-    pub fn execute_command(&mut self, command: Command, offset: i64) {
+    pub async fn execute_command(&mut self, command: Command, offset: i64) {
         info!("execute_command: {:?}, offset: {}", command, offset);
         self.send_marker(offset, true);
 
         match command {
-            Command::PlaceOrder(cmd) => self.execute_place_order(cmd),
+            Command::PlaceOrder(cmd) => self.execute_place_order(cmd).await,
             Command::CancelOrder(cmd) => self.execute_cancel_order(cmd),
-            Command::Deposit(cmd) => self.execute_deposit(cmd),
+            Command::Deposit(cmd) => self.execute_deposit(cmd).await,
             Command::PutProduct(cmd) => self.execute_put_product(cmd),
         }
 
         self.send_marker(offset, false);
     }
 
-    fn execute_deposit(&mut self, cmd: DepositCommand) {
-        // self.account_book.deposit(
-        //     &cmd.user_id, 
-        //     &cmd.currency, 
-        //     cmd.amount, 
-        //     &cmd.transaction_id
-        // );
+    async fn execute_deposit(&mut self, cmd: DepositCommand) {
+        self.account_book.deposit(
+            &cmd.user_id, 
+            &cmd.currency, 
+            cmd.amount,
+        ).await;
     }
 
     fn execute_put_product(&mut self, cmd: PutProductCommand) {
@@ -94,12 +96,12 @@ impl MatchingEngine {
         // self.create_order_book(product_id);
     }
 
-    fn execute_place_order(&mut self, cmd: PlaceOrderCommand) {
-        // if let Some(order_book) = self.order_books.get_mut(&cmd.product_id) {
-        //     order_book.place_order(Order::from(cmd));
-        // } else {
-        //     warn!("no such order book: {}", cmd.product_id);
-        // }
+    async fn execute_place_order(&mut self, cmd: PlaceOrderCommand) {
+        if let Some(order_book) = self.order_books.get_mut(&cmd.product_id) {
+            order_book.place_order(Order::from(cmd)).await;
+        } else {
+            warn!("no such order book: {}", cmd.product_id);
+        }
     }
 
     fn execute_cancel_order(&mut self, cmd: CancelOrderCommand) {

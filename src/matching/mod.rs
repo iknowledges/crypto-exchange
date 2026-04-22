@@ -1,4 +1,4 @@
-use rdkafka::{ClientConfig, Message, admin::{AdminClient, AdminOptions, NewTopic}, client::DefaultClientContext, consumer::{Consumer, StreamConsumer}};
+use rdkafka::{ClientConfig, Message, admin::{AdminClient, AdminOptions, NewTopic}, client::DefaultClientContext, consumer::{self, Consumer, StreamConsumer}, producer::FutureProducer};
 use tracing::error;
 
 use crate::matching::{command::Command, engine::MatchingEngine};
@@ -9,18 +9,14 @@ pub mod command_producer;
 mod engine;
 mod order_book;
 mod product_book;
-mod account_book;
+pub mod account_book;
 mod message_sender;
+pub mod message;
 
-pub async fn run_engine(brokers: &str, group_id: &str, topic: &str) -> anyhow::Result<()> {
-    let engine = MatchingEngine::new();
+pub async fn run_engine(bootstrap_server: &str, topic: &str, group_id: &str) -> anyhow::Result<()> {
+    let engine = MatchingEngine::new()?;
     
-    let consumer: StreamConsumer = ClientConfig::new()
-        .set("bootstrap.servers", brokers)
-        .set("group.id", group_id)
-        .set("auto.offset.reset", "earliest")
-        .set("socket.timeout.ms", "4000")
-        .create()?;
+    let consumer = create_kafka_consumer(bootstrap_server, group_id)?;
     consumer.subscribe(&[topic])?;
 
     tokio::spawn(async move {
@@ -46,7 +42,31 @@ async fn engine_loop(consumer: StreamConsumer, mut engine: MatchingEngine) -> an
                 if offset <= start_offset { continue; }
             }
 
-            engine.execute_command(command, offset);
+            engine.execute_command(command, offset).await;
         }
     }
+}
+
+fn create_kafka_producer(bootstrap_server: &str) -> anyhow::Result<FutureProducer> {
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", bootstrap_server)
+        .set("compression.type", "zstd")
+        .set("retries", "2147483647")
+        .set("linger.ms", "100")
+        .set("batch.size", (16384 * 2).to_string())
+        .set("enable.idempotence", "true")
+        .set("max.in.flight.requests.per.connection", "5")
+        .set("acks", "all")
+        .create()?;
+    Ok(producer)
+}
+
+fn create_kafka_consumer(bootstrap_server: &str, group_id: &str) -> anyhow::Result<StreamConsumer> {
+    let consumer: StreamConsumer = ClientConfig::new()
+        .set("bootstrap.servers", bootstrap_server)
+        .set("group.id", group_id)
+        .set("auto.offset.reset", "earliest")
+        .set("socket.timeout.ms", "4000")
+        .create()?;
+    Ok(consumer)
 }

@@ -1,11 +1,9 @@
 use std::time::Duration;
 
-use rdkafka::{
-    ClientConfig, admin::{AdminClient, AdminOptions, NewTopic}, client::DefaultClientContext, producer::{FutureProducer, FutureRecord}
-};
+use rdkafka::producer::{FutureProducer, FutureRecord};
 use tracing::{error, info};
 
-use crate::matching::command::Command;
+use crate::matching::{command::Command, create_kafka_producer};
 
 pub struct MatchingEngineCommandProducer {
     producer: FutureProducer,
@@ -14,15 +12,7 @@ pub struct MatchingEngineCommandProducer {
 
 impl MatchingEngineCommandProducer {
     pub fn new(bootstrap_server: &str, topic: &str) -> anyhow::Result<Self> {
-        let producer: FutureProducer = ClientConfig::new()
-            .set("bootstrap.servers", bootstrap_server)
-            .set("retries", "2147483647")
-            .set("linger.ms", "100")
-            .set("batch.size", (16384 * 2).to_string())
-            // .set("enable.idempotence", "true")
-            .set("max.in.flight.requests.per.connection", "5")
-            .set("acks", "all")
-            .create()?;
+        let producer = create_kafka_producer(bootstrap_server)?;
         Ok(Self { producer, topic: topic.to_string() })
     }
 

@@ -2,6 +2,7 @@ use mongodb::{Database, options::ClientOptions};
 
 pub mod user_repository;
 pub mod product_repository;
+pub mod account_repository;
 
 pub async fn init(database_url: &str, database_name: &str) -> anyhow::Result<Database> {
     let client_options = ClientOptions::parse(database_url).await?;

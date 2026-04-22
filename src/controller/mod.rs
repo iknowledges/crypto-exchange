@@ -3,10 +3,12 @@ use serde::{Deserialize, Serialize};
 use crate::{auth::middleware::get_auth_layer, server::AppContext};
 
 mod user_controller;
+mod admin_controller;
 mod order_controller;
 
 pub fn create_router() -> Router<AppContext> {
     Router::new().nest("/api", Router::new()
+        .nest("/admin", admin_controller::create_router())
         .nest("/order", order_controller::create_router())
         .route_layer(get_auth_layer())
         .nest("/user", user_controller::create_router()))

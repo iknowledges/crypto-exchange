@@ -1,5 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
-use crate::{controller, matching::command_producer::MatchingEngineCommandProducer};
+use axum::{Extension, routing::get};
+
+use crate::{controller, feed::{self, session_manager::SessionManager, ws_handler}, matching::command_producer::MatchingEngineCommandProducer};
 
 #[derive(Clone)]
 pub struct AppContext {
@@ -19,7 +21,13 @@ impl AppContext {
 pub async fn start(state: AppContext, port: u16) -> anyhow::Result<()> {
     let router = controller::create_router();
 
+    let session_manager = Arc::new(SessionManager::new());
+
+    feed::listener::start(session_manager.clone()).await?;
+
     let app = axum::Router::new()
+        .route("/ws", get(ws_handler))
+        .layer(Extension(session_manager))
         .merge(router)
         .with_state(state);
 
