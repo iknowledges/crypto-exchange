@@ -1,16 +1,27 @@
 use std::sync::Arc;
 
-use axum::{Extension, extract::{Query, WebSocketUpgrade, ws::{Message, WebSocket}}, http::StatusCode, response::IntoResponse};
+use axum::{
+    Extension,
+    extract::{
+        Query, WebSocketUpgrade,
+        ws::{Message, WebSocket},
+    },
+    http::StatusCode,
+    response::IntoResponse,
+};
 use axum_extra::extract::CookieJar;
-use serde::Deserialize;
-use tokio::sync::mpsc;
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
+use tokio::sync::mpsc::{self};
 use tracing::{error, info, warn};
 
-use crate::{auth::jwt::{Principal, get_jwt}, feed::session_manager::SessionManager};
+use crate::{
+    auth::jwt::{Principal, get_jwt},
+    feed::session_manager::SessionManager,
+};
 
-pub mod session_manager;
 pub mod listener;
+pub mod session_manager;
 
 #[derive(Deserialize)]
 #[serde(tag = "type")]
@@ -24,7 +35,7 @@ enum Request {
 }
 
 #[derive(Deserialize)]
-struct SubRequest {
+pub struct SubRequest {
     #[serde(rename = "productIds")]
     product_ids: Vec<String>,
     channels: Vec<String>,
@@ -45,11 +56,12 @@ pub async fn ws_handler(
     Extension(manager): Extension<Arc<SessionManager>>,
 ) -> impl IntoResponse {
     // 1. Get token from query
-    let token = params.access_token
+    let token = params
+        .access_token
         .or_else(|| cookie.get("accessToken").map(|c| c.value().to_string()));
 
     let Some(token) = token else {
-        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     };
 
     // 2. Decode token
@@ -57,7 +69,7 @@ pub async fn ws_handler(
         Ok(p) => p,
         Err(e) => {
             error!("decode token error: {}", e);
-            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
         }
     };
 
@@ -68,7 +80,7 @@ pub async fn ws_handler(
 async fn handle_socket(socket: WebSocket, manager: Arc<SessionManager>, pricipal: Principal) {
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
-    
+
     let session_id = uuid::Uuid::new_v4().to_string();
     info!("session start: {}", session_id);
     manager.sessions.insert(session_id.clone(), tx);
@@ -91,39 +103,7 @@ async fn handle_socket(socket: WebSocket, manager: Arc<SessionManager>, pricipal
         while let Some(Ok(msg)) = receiver.next().await {
             if let Message::Text(text) = msg {
                 if let Ok(req) = serde_json::from_str::<Request>(&text) {
-                    match req {
-                        Request::Subscribe(sub) => {
-                            for chan in sub.channels {
-                                match chan.as_str() {
-                                    "order" => {
-                                        for pid in &sub.product_ids {
-                                            let full_chan = format!("{}.{}", pid, chan);
-                                            manager_clone.subscribe(&full_chan, &sid_for_recv);
-                                        }
-                                    },
-                                    "funds" => {
-                                        let user_id = pricipal.id.clone();
-                                        if let Some(currencies) = &sub.currency_ids {
-                                            for currency in currencies {
-                                                let account_chan = format!("{}.{}.{}", user_id, currency, chan);
-                                                manager_clone.subscribe(&account_chan, &sid_for_recv);
-                                            }
-                                        }
-                                    }
-                                    _ => { warn!("Subsribe channel {} not found", chan); }
-                                }
-
-                            }
-                        },
-                        Request::Unsubscribe(unsub) => {
-                            // Similar logic to remove from subscriptions
-                        },
-                        Request::Ping => {
-                            if let Some(tx) = manager_clone.sessions.get(&sid_for_recv) {
-                                let _ = tx.send(Message::Text(r#"{"type":"pong"}"#.into()));
-                            }
-                        }
-                    }
+                    handle_request(req, manager_clone.clone(), &pricipal, &sid_for_recv);
                 } else {
                     warn!("Parse message failed: {}", text);
                 }
@@ -139,6 +119,30 @@ async fn handle_socket(socket: WebSocket, manager: Arc<SessionManager>, pricipal
 
     // Cleanup
     manager.sessions.remove(&session_id);
-    manager.subscriptions.alter_all(|_, mut v| { v.remove(&session_id); v });
+    manager.subscriptions.alter_all(|_, mut v| {
+        v.remove(&session_id);
+        v
+    });
     info!("session closed: {}", session_id);
+}
+
+fn handle_request(
+    request: Request,
+    manager: Arc<SessionManager>,
+    pricipal: &Principal,
+    session_id: &str,
+) {
+    match request {
+        Request::Subscribe(sub) => {
+            manager.sub_or_unsub(sub, session_id, &pricipal.id, true);
+        }
+        Request::Unsubscribe(unsub) => {
+            manager.sub_or_unsub(unsub, session_id, &pricipal.id, false);
+        }
+        Request::Ping => {
+            if let Some(tx) = manager.sessions.get(session_id) {
+                let _ = tx.send(Message::Text(r#"{"type":"pong"}"#.into()));
+            }
+        }
+    }
 }

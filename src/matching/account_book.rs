@@ -5,7 +5,7 @@ use std::{
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::matching::{enums::OrderSide, message::{Message, MessageType}, message_sender::MessageSender};
 
@@ -75,6 +75,7 @@ impl AccountBook {
 
         if let Some(account) = self.accounts.get_mut(user_id).and_then(|m| m.get_mut(currency)) {
             if account.available < amount {
+                warn!("hold available: {}, amount: {}", account.available, amount);
                 return false;
             }
             account.available -= amount;
@@ -83,6 +84,8 @@ impl AccountBook {
             let account_clone = account.clone();
             self.send_account_message(account_clone).await;
             return true;
+        } else {
+            error!("account not found by user_id: {}, currency: {}", user_id, currency);
         }
         false
     }

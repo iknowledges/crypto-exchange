@@ -19,6 +19,7 @@ pub struct PlaceOrderCommand {
     pub user_id: String,
     pub size: Decimal,
     pub price: Decimal,
+    pub funds: Decimal,
     pub order_type: OrderType,
     pub order_side: OrderSide,
     pub time: DateTime<Utc>,

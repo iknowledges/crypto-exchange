@@ -43,7 +43,7 @@ pub async fn save(db: Database, account: AccountEntity) {
     };
 
     match collection.replace_one(filter, account).upsert(true).await {
-        Ok(res) => info!("Replaced account document: {}", res.modified_count),
+        Ok(res) => info!("Save account document: {}", res.modified_count),
         Err(e) => error!("Save account error: {}", e),
     }
 }

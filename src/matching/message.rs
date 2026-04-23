@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::matching::{account_book::Account, order_book::Order};
+use crate::matching::{account_book::Account, order::Trade, order::Order, product_book::Product};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Message {
@@ -11,11 +11,11 @@ pub struct Message {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum MessageType {
     Account(Account),
-    Product,
+    Product(Product),
     Order(OrderMessage),
-    Trade,
-    CommandStart,
-    CommandEnd,
+    Trade(Trade),
+    CommandStart(i64),
+    CommandEnd(i64),
 }
 
 #[derive(Debug, Serialize, Deserialize)]

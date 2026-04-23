@@ -1,63 +1,16 @@
 use std::{collections::{BTreeMap, HashMap}, sync::{Arc, atomic::{AtomicU64, Ordering}}};
 
-use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 use tracing::{error, warn};
 
-use crate::matching::{account_book::AccountBook, command::PlaceOrderCommand, enums::{OrderSide, OrderStatus, OrderType}, message::{Message, MessageType, OrderMessage}, message_sender::MessageSender, product_book::{Product, ProductBook}};
+use crate::matching::{account_book::AccountBook, enums::{OrderSide, OrderStatus, OrderType}, message::{Message, MessageType, OrderMessage}, message_sender::MessageSender, order::{Order, Trade}, product_book::{Product, ProductBook}};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Order {
-    pub id: String,
-    pub sequence: u64,
-    pub user_id: String,
-    pub order_type: OrderType,
-    pub side: OrderSide,
-    pub remaining_size: Decimal,
-    pub price: Decimal,
-    pub remaining_funds: Decimal,
-    pub size: Decimal,
-    pub funds: Decimal,
-    pub post_only: bool,
-    pub time: DateTime<Utc>,
-    pub product_id: String,
-    pub status: OrderStatus,
-    pub client_oid: Option<String>,
-}
-
-impl From<PlaceOrderCommand> for Order {
-    fn from(command: PlaceOrderCommand) -> Self {
-        let funds = if command.order_type == OrderType::LIMIT {
-            command.size * command.price
-        } else {
-            Decimal::ZERO
-        };
-
-        Self {
-            id: command.order_id,
-            sequence: 0,
-            user_id: command.user_id,
-            order_type: command.order_type,
-            side: command.order_side,
-            remaining_size: command.size,
-            price: command.price,
-            remaining_funds: funds,
-            size: command.size,
-            funds,
-            post_only: false,
-            time: command.time,
-            product_id: command.product_id,
-            status: OrderStatus::RECEIVED,
-            client_oid: None,
-        }
-    }
-}
 
 pub struct OrderBook {
     product_id: String,
-    account_book: AccountBook,
-    product_book: ProductBook,
+    account_book: Arc<RwLock<AccountBook>>,
+    product_book: Arc<RwLock<ProductBook>>,
     // BTreeMap is sorted by key. 
     // Asks (Sells) are natural order (low to high).
     asks: BTreeMap<Decimal, HashMap<String, Order>>,
@@ -72,8 +25,33 @@ pub struct OrderBook {
 }
 
 impl OrderBook {
+    pub fn new(
+        product_id: &str,
+        order_sequence: u64,
+        trade_sequence: u64,
+        order_book_sequence: u64,
+        account_book: Arc<RwLock<AccountBook>>,
+        product_book: Arc<RwLock<ProductBook>>,
+        message_sender: Arc<MessageSender>,
+        message_sequence: Arc<AtomicU64>
+    ) -> Self {
+        Self {
+            product_id: product_id.to_string(),
+            account_book,
+            product_book,
+            asks: BTreeMap::new(),
+            bids: BTreeMap::new(),
+            order_by_id: HashMap::new(),
+            message_sender,
+            message_sequence,
+            order_sequence,
+            trade_sequence,
+            order_book_sequence,
+        }
+    }
+
     pub async fn place_order(&mut self, mut taker_order: Order) {
-        let product = match self.product_book.get_product(&self.product_id) {
+        let product = match self.product_book.read().await.get_product(&self.product_id) {
             Some(p) => p.clone(),
             None => {
                 warn!("order rejected, reason: {} not found", self.product_id);
@@ -84,16 +62,19 @@ impl OrderBook {
         taker_order.sequence = self.order_sequence;
 
         // 1. Hold funds
-        let ok = if taker_order.side == OrderSide::BUY {
-            self.account_book.hold(&taker_order.user_id, &product.quote_currency, taker_order.remaining_funds).await
-        } else {
-            self.account_book.hold(&taker_order.user_id, &product.base_currency, taker_order.remaining_size).await
-        };
-        if !ok {
-            warn!("order rejected, reason: INSUFFICIENT_FUNDS: {:?}", taker_order);
-            taker_order.status = OrderStatus::REJECTED;
-            self.send_order_msg(taker_order).await;
-            return;
+        {
+            let mut acct_book = self.account_book.write().await;
+            let ok = if taker_order.side == OrderSide::BUY {
+                acct_book.hold(&taker_order.user_id, &product.quote_currency, taker_order.remaining_funds).await
+            } else {
+                acct_book.hold(&taker_order.user_id, &product.base_currency, taker_order.remaining_size).await
+            };
+            if !ok {
+                warn!("order rejected, reason: INSUFFICIENT_FUNDS: {:?}", taker_order);
+                taker_order.status = OrderStatus::REJECTED;
+                self.send_order_msg(taker_order).await;
+                return;
+            }
         }
 
         taker_order.status = OrderStatus::RECEIVED;
@@ -154,15 +135,19 @@ impl OrderBook {
             for (id, maker_order) in orders_at_level.iter_mut() {
                 if let Some(trade) = self.execute_trade(taker_order, maker_order) {
                     // Exchange funds in account book
-                    self.account_book.exchange(
-                        &taker_order.user_id,
-                        &maker_order.user_id,
-                        &product.base_currency,
-                        &product.quote_currency,
-                        taker_order.side,
-                        trade.size,
-                        trade.funds,
-                    ).await?;
+                    {
+                        let mut acct_book = self.account_book.write().await;
+                        acct_book.exchange(
+                            &taker_order.user_id,
+                            &maker_order.user_id,
+                            &product.base_currency,
+                            &product.quote_currency,
+                            taker_order.side,
+                            trade.size,
+                            trade.funds,
+                        ).await?;
+                    }
+
                     if maker_order.status == OrderStatus::FILLED {
                         ids_to_remove.push(id.clone());
                         self.order_by_id.remove(id);
@@ -254,16 +239,53 @@ impl OrderBook {
     async fn unhold_order_funds(&mut self, maker_order: &Order, product: &Product) {
         if maker_order.side == OrderSide::BUY {
             if maker_order.remaining_funds > Decimal::ZERO {
-                if let Err(e) = self.account_book.unhold(&maker_order.user_id, &product.quote_currency, maker_order.remaining_funds).await {
+                let mut acct_book = self.account_book.write().await;
+                if let Err(e) = acct_book.unhold(&maker_order.user_id, &product.quote_currency, maker_order.remaining_funds).await {
                     error!("unhold_order_funds buy error: {}", e);
                 }
             }
         } else {
             if maker_order.remaining_size > Decimal::ZERO {
-                if let Err(e) = self.account_book.unhold(&maker_order.user_id, &product.base_currency, maker_order.remaining_size).await {
+                let mut acct_book = self.account_book.write().await;
+                if let Err(e) = acct_book.unhold(&maker_order.user_id, &product.base_currency, maker_order.remaining_size).await {
                     error!("unhold_order_funds sell error: {}", e);
                 }
             }
+        }
+    }
+
+    pub async fn cancel_order(&mut self, order_id: &str) {
+        // 1. Remove from ID map
+        let order = match self.order_by_id.remove(order_id) {
+            Some(o) => o,
+            None => return
+        };
+
+        // 2. Remove from Depth
+        let depth = if order.side == OrderSide::BUY {
+            &mut self.bids
+        } else {
+            &mut self.asks
+        };
+
+        if let Some(orders_at_price) = depth.get_mut(&order.price) {
+            orders_at_price.remove(order_id);
+            // Clean up empty price levels to keep BTreeMap efficient
+            if orders_at_price.is_empty() {
+                depth.remove(&order.price);
+            }
+        }
+
+        // 3. Update status and Notify
+        let mut cancelled_order = order.clone();
+        cancelled_order.status = OrderStatus::CANCELLED;
+
+        self.send_order_msg(cancelled_order).await;
+        
+        // 4. Un-hold funds
+        let product_opt = self.product_book.read().await.get_product(&self.product_id).cloned();
+        if let Some(product) = product_opt {
+            self.unhold_order_funds(&order, &product).await;
         }
     }
 
@@ -286,23 +308,10 @@ impl OrderBook {
         let sequence = self.message_sequence.fetch_add(1, Ordering::SeqCst) + 1;
         let message = Message {
             sequence,
-            message_type: MessageType::Trade,
+            message_type: MessageType::Trade(trade),
         };
         if let Err(e) = self.message_sender.send(message).await {
             error!("send_trade_msg error: {}", e);
         }
     }
-}
-
-
-struct Trade {
-    pub product_id: String,
-    pub sequence: u64,
-    pub size: Decimal,
-    pub funds: Decimal,
-    pub price: Decimal,
-    pub time: DateTime<Utc>,
-    pub side: OrderSide,
-    pub taker_order_id: String,
-    pub maker_order_id: String,
 }

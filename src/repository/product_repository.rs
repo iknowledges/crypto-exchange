@@ -1,12 +1,14 @@
 use mongodb::{Database, bson::{DateTime, Decimal128, Uuid, doc}};
 use serde::{Deserialize, Serialize};
+use tracing::{error, info};
 
 const PRODUCT_ENTITY: &str = "product_entity";
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProductEntity {
     #[serde(rename = "_id")]
-    pub id: Uuid,
+    pub id: String,
     pub base_currency: String,
     pub quote_currency: String,
     pub base_min_size: Decimal128,
@@ -22,8 +24,26 @@ pub struct ProductEntity {
     pub created_at: DateTime,
 }
 
-pub async fn find_by_id(db: Database, id: &str) -> anyhow::Result<Option<ProductEntity>> {
+pub async fn find_by_id(db: Database, id: &str) -> Option<ProductEntity> {
     let collection = db.collection(PRODUCT_ENTITY);
-    let entity = collection.find_one(doc!{"_id": id}).await?;
-    Ok(entity)
+
+    match collection.find_one(doc!{"_id": id}).await {
+        Ok(entity) => entity,
+        Err(e) => {
+            error!("Product find_by_id error: {}", e);
+            None
+        }
+    }
+}
+
+pub async fn save(db: Database, product :ProductEntity) {
+    let collection = db.collection(PRODUCT_ENTITY);
+    let filter = doc! {
+        "_id": &product.id,
+    };
+
+    match collection.replace_one(filter, product).upsert(true).await {
+        Ok(res) => info!("Save product document: {}", res.modified_count),
+        Err(e) => error!("Save product error: {}", e),
+    }
 }

@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command_producer = MatchingEngineCommandProducer::new(&app_cfg.bootstrap_server, &app_cfg.command_topic)?;
 
     let db = repository::init(&app_cfg.database_url, &app_cfg.database_name).await?;
-    market::start("OrderPersistence", db.clone()).await?;
+    market::persistence::start("MarketPersistence", db.clone()).await?;
 
     let state = AppContext::new(db, command_producer);
 

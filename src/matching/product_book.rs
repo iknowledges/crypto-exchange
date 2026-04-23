@@ -1,14 +1,25 @@
 use std::{collections::HashMap, sync::{Arc, atomic::{AtomicU64, Ordering}}};
 
+use serde::{Deserialize, Serialize};
 use tracing::error;
 
-use crate::matching::{message::{Message, MessageType}, message_sender::MessageSender};
+use crate::matching::{command::PutProductCommand, message::{Message, MessageType}, message_sender::MessageSender};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Product {
     pub id: String,
     pub base_currency: String,
     pub quote_currency: String,
+}
+
+impl From<PutProductCommand> for Product {
+    fn from(value: PutProductCommand) -> Self {
+        Product {
+            id: value.product_id,
+            base_currency: value.base_currency,
+            quote_currency: value.quote_currency
+        }
+    }
 }
 
 pub struct ProductBook {
@@ -45,14 +56,14 @@ impl ProductBook {
         self.products.insert(product_id, product);
 
         // 2. Construct and send message
-        let sequence = self.message_sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        // let sequence = self.message_sequence.fetch_add(1, Ordering::SeqCst) + 1;
         
-        let message = Message {
-            sequence,
-            message_type: MessageType::Product
-        };
-        if let Err(e) = self.message_sender.send(message).await {
-            error!("put_product error: {}", e);
-        }
+        // let message = Message {
+        //     sequence,
+        //     message_type: MessageType::Product(cloned_product)
+        // };
+        // if let Err(e) = self.message_sender.send(message).await {
+        //     error!("put_product error: {}", e);
+        // }
     }
 }
