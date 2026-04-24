@@ -11,6 +11,7 @@ mod matching;
 mod feed;
 mod cache;
 mod market;
+mod snapshot;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,13 +19,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_cfg = config::get();
 
-    let group_id = "MatchingEngine";
-    matching::run_engine(&app_cfg.bootstrap_server, &app_cfg.command_topic, group_id).await?;
+    matching::run_engine(&app_cfg.bootstrap_server, &app_cfg.command_topic, "MatchingEngine").await?;
 
     let command_producer = MatchingEngineCommandProducer::new(&app_cfg.bootstrap_server, &app_cfg.command_topic)?;
 
     let db = repository::init(&app_cfg.database_url, &app_cfg.database_name).await?;
     market::persistence::start("MarketPersistence", db.clone()).await?;
+
+    snapshot::start("EngineSnapshot").await?;
 
     let state = AppContext::new(db, command_producer);
 

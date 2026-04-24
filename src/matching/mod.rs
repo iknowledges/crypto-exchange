@@ -9,7 +9,7 @@ pub mod command_producer;
 mod engine;
 pub mod order_book;
 pub mod order;
-mod product_book;
+pub mod product_book;
 pub mod account_book;
 mod message_sender;
 pub mod message;

@@ -7,6 +7,7 @@ use crate::matching::{command::PlaceOrderCommand, enums::{OrderSide, OrderStatus
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
+    #[serde(rename = "_id")]
     pub id: String,
     pub sequence: u64,
     pub user_id: String,

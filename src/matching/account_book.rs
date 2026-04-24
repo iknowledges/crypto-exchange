@@ -11,6 +11,7 @@ use crate::matching::{enums::OrderSide, message::{Message, MessageType}, message
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
+    #[serde(rename = "_id")]
     pub id: String,
     pub user_id: String,
     pub currency: String,

@@ -7,6 +7,7 @@ use crate::matching::{command::PutProductCommand, message::{Message, MessageType
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Product {
+    #[serde(rename = "_id")]
     pub id: String,
     pub base_currency: String,
     pub quote_currency: String,
@@ -56,14 +57,13 @@ impl ProductBook {
         self.products.insert(product_id, product);
 
         // 2. Construct and send message
-        // let sequence = self.message_sequence.fetch_add(1, Ordering::SeqCst) + 1;
-        
-        // let message = Message {
-        //     sequence,
-        //     message_type: MessageType::Product(cloned_product)
-        // };
-        // if let Err(e) = self.message_sender.send(message).await {
-        //     error!("put_product error: {}", e);
-        // }
+        let sequence = self.message_sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        let message = Message {
+            sequence,
+            message_type: MessageType::Product(cloned_product)
+        };
+        if let Err(e) = self.message_sender.send(message).await {
+            error!("put_product error: {}", e);
+        }
     }
 }

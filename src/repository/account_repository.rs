@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use mongodb::{
     Database,
-    bson::{DateTime, Decimal128, Uuid, doc},
+    bson::{DateTime, Decimal128, doc},
 };
 use serde::Serialize;
 use tracing::{error, info};
